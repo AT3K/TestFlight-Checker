@@ -1,1 +1,11 @@
+# Ignore backup files
+*.bck
+
+# Ignore environment files
 .env
+
+# Ignore virtual environments
+venv/
+
+# Ignore the TestFlightChecker virtual environment directory
+TestFlightChecker/
