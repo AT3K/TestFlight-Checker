@@ -1,11 +1,12 @@
-# Ignore backup files
-*.bck
-
-# Ignore environment files
+# Ignore environment variables
 .env
 
-# Ignore virtual environments
-venv/
+# Ignore Python bytecode files
+*.pyc
+__pycache__/
 
-# Ignore the TestFlightChecker virtual environment directory
+# Ignore virtual environment folder
 TestFlightChecker/
+
+# Ignore configuration backup
+*.bck

@@ -59,7 +59,6 @@ def send_discord_notification(app_name, testflight_url):
     try:
         message = f"🚀 TestFlight slots for {app_name} are AVAILABLE!\n" \
                   f"- Web Link: {testflight_url}\n" \
-                  f"- Open in App: itms-beta://{testflight_url.split('://')[1]}"
         data = {"content": message}
         response = requests.post(DISCORD_WEBHOOK_URL, json=data)
         if response.status_code == 204:
