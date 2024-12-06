@@ -1,254 +1,440 @@
-import os
+# ======================
+# Script Starts Here
+#========================
+
+MULTIPLE_INSTANCES = False  # Set to True to allow multiple instances, False to allow only a single instance
+
+# =======================
+# DO NOT EDIT BELOW THIS LINE UNLESS YOU KNOW WHAT YOU ARE DOING
+# =======================
+
+# =======================
+# Import Required Libraries
+# =======================
 import json
+import os
+import subprocess
+import shutil
 import requests
-from dotenv import load_dotenv, set_key
 from datetime import datetime
+from packaging import version  # We will use this library to compare version strings
+import re
 
-# ###################################################################################################
-# CONFIGURATION
-# ###################################################################################################
+# =======================
+# Configuration & Constants
+# =======================
+CURRENT_VERSION = "v0.0.3-alpha"  # Current version of the application
+CONFIG_FILE_PATH = "apps_config.json"  # Path to the apps configuration file
+PM2_PROCESS_NAME = "testflight_checker"  # Name of the PM2 process
+WEBHOOK_URL_PATTERN = r"^https://discord\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$"  # Regex pattern to validate Discord webhook URL
 
-CONFIG_FILE_PATH = "apps_config.json"  # Path to the configuration file
-CHECKER_SCRIPT_PATH = "testflight_checker.py"  # Path to the TestFlight checker script
+# =======================
+# Webhook Management
+# =======================
+def create_env_file():
+    """Create the .env file with an empty DISCORD_WEBHOOK_URL if it doesn't exist."""
+    if not os.path.exists(".env"):
+        with open(".env", "w") as file:
+            file.write("DISCORD_WEBHOOK_URL=''\n")
+        print(f"[{datetime.now()}] .env file created with an empty DISCORD_WEBHOOK_URL.")
 
-ALLOW_MULTIPLE_INSTANCES = False  # Set this to True for multiple instances, False for a single instance
+def check_webhook():
+    """Check if the webhook URL is set in the .env file."""
+    if not os.path.exists(".env"):
+        create_env_file()  # Create the .env file if it doesn't exist
+    with open(".env", "r") as file:
+        for line in file:
+            if line.startswith("DISCORD_WEBHOOK_URL="):
+                webhook_url = line.strip().split("=")[1].strip("'")  # Remove the single quotes around the URL
+                return bool(webhook_url)  # Return True if the webhook URL is not empty
+    return False
 
-# ###################################################################################################
-# *** DO NOT EDIT ANYTHING BELOW THIS LINE ***
-# ###################################################################################################
-
-# The rest of the script starts here
-
-# ###################################################################################################
-# SECTION: PM2 Management
-# ###################################################################################################
-
-def check_pm2():
-    """Check if PM2 is installed."""
-    try:
-        # Attempt to check the version of PM2
-        pm2_version = os.popen("pm2 -v").read().strip()
-        if not pm2_version:
-            print(f"[{datetime.now()}] PM2 is missing or not initialized. Please install PM2 manually to continue.")
-            print(f"[{datetime.now()}] You can find the installation guide here: https://pm2.io/docs/runtime/guide/installation/")
-            exit()  # Exit the script if PM2 is not installed
+def validate_discord_webhook_format(webhook_url):
+    """Validate the format of the Discord webhook URL."""
+    if re.match(WEBHOOK_URL_PATTERN, webhook_url):
         return True
-    except Exception as e:
-        # In case the command fails (e.g., PM2 is missing)
-        print(f"[{datetime.now()}] Error checking PM2: {e}")
-        print(f"[{datetime.now()}] PM2 is missing or not initialized. Please install PM2 manually to continue.")
-        print(f"[{datetime.now()}] You can find the installation guide here: https://pm2.io/docs/runtime/guide/installation/")
-        exit()  # Exit the script if there is any issue with PM2
+    else:
+        print(f"[{datetime.now()}] Invalid Discord webhook URL format. Please ensure the URL follows the correct format.")
+        print(f"[{datetime.now()}] The correct format for a Discord webhook URL is: https://discord.com/api/webhooks/<webhook_id>/<webhook_token>")
+        return False
 
-# ###################################################################################################
-# SECTION: Configuration Management
-# ###################################################################################################
+def validate_discord_webhook(webhook_url):
+    """Validate the Discord webhook URL by sending a test message."""
+    if not validate_discord_webhook_format(webhook_url):
+        return False
+    
+    test_data = {
+        "content": "Test message from TestFlight Manager to validate webhook."
+    }
 
+    try:
+        response = requests.post(webhook_url, json=test_data)
+        
+        if response.status_code == 204:
+            print(f"[{datetime.now()}] Discord webhook URL is valid.")
+            return True
+        else:
+            print(f"[{datetime.now()}] Failed to send test message. Status code: {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] Error validating Discord webhook: {e}")
+        return False
+
+# =======================
+# App Management Functions
+# =======================
 def load_apps():
-    """Load the apps from the configuration file."""
+    """Load the apps configuration from the JSON file or create an empty file if it doesn't exist."""
     if not os.path.exists(CONFIG_FILE_PATH):
-        with open(CONFIG_FILE_PATH, "w") as file:
-            json.dump({}, file, indent=4)
-        print(f"[{datetime.now()}] Configuration file created.")
-    with open(CONFIG_FILE_PATH, "r") as file:
-        return json.load(file) or {}
+        print(f"[{datetime.now()}] Configuration file not found. Creating a new blank file.")
+        save_apps({})  # Create an empty file if it doesn't exist
+        return {}
+
+    try:
+        with open(CONFIG_FILE_PATH, "r") as file:
+            apps = json.load(file)
+        return apps
+    except json.JSONDecodeError:
+        print(f"[{datetime.now()}] Configuration file is corrupted. Creating a new blank file.")
+        save_apps({})  # If JSON is corrupted, reset to an empty file
+        return {}
 
 def save_apps(apps):
-    """Save the apps to the configuration file."""
+    """Save the apps configuration to the JSON file."""
     with open(CONFIG_FILE_PATH, "w") as file:
         json.dump(apps, file, indent=4)
-    print(f"[{datetime.now()}] Configuration saved.")
-
-def check_and_prompt_webhook():
-    """Check if the Discord webhook URL is set and prompt for it if not."""
-    load_dotenv()
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not webhook_url:
-        webhook_url = input("Enter your Discord webhook URL: ").strip()
-        if webhook_url:
-            set_key(".env", "DISCORD_WEBHOOK_URL", webhook_url)
-            print(f"[{datetime.now()}] Webhook URL saved.")
-    return webhook_url
-
-# ###################################################################################################
-# SECTION: App Management
-# ###################################################################################################
+        print(f"[{datetime.now()}] Configuration saved.")
 
 def list_apps():
-    """List all apps in the configuration."""
+    """List all configured apps."""
     apps = load_apps()
-    if not apps:
-        print(f"[{datetime.now()}] No apps available.")
-        return
-    print(f"\nCurrent TestFlight apps:\n{'='*30}")
-    for index, app in enumerate(apps.items()):
-        print(f"{chr(65 + index)}) {app[0]}")
-    print(f"{'='*30}")
+    if apps:
+        print("\nConfigured Apps:")
+        for name, url in apps.items():
+            print(f"- {name}")
+    else:
+        print("\nNo apps are configured.")
 
 def add_app():
     """Add a new app to the configuration."""
-    app_name = input("Enter the app name: ")
-    testflight_url = input("Enter the TestFlight URL: ")
-    if app_name and testflight_url:
-        apps = load_apps()
-        apps[app_name] = testflight_url
-        save_apps(apps)
-        print(f"[{datetime.now()}] {app_name} added successfully!")
-    else:
-        print(f"[{datetime.now()}] Invalid input. Please make sure both app name and TestFlight URL are provided.")
+    app_name = input("Enter the app name: ").strip()
+    if not app_name:
+        print(f"[{datetime.now()}] App name cannot be empty. Returning to the menu.")
+        return
+
+    testflight_url = input("Enter the TestFlight URL: ").strip()
+
+    if not testflight_url.startswith("https://testflight.apple.com/join/"):
+        print(f"[{datetime.now()}] Invalid URL format. The URL must start with 'https://testflight.apple.com/join/'.")
+        return
+
+    apps = load_apps()
+    apps[app_name] = testflight_url
+    save_apps(apps)
+    
+    # Restart silently in the background to apply changes
+    restart_checker()
 
 def remove_app():
     """Remove an app from the configuration."""
     apps = load_apps()
+    
     if not apps:
         print(f"[{datetime.now()}] No apps to remove.")
         return
-    list_apps()
-    letter = input("Enter the letter of the app to remove: ").upper()
-    if letter.isalpha() and ord(letter) - 65 < len(apps):
-        app_to_remove = list(apps.keys())[ord(letter) - 65]
-        del apps[app_to_remove]
-        save_apps(apps)
-        print(f"[{datetime.now()}] {app_to_remove} removed successfully!")
-    else:
-        print(f"[{datetime.now()}] Invalid selection. Please enter a valid letter.")
 
-# ###################################################################################################
-# SECTION: TestFlight Management
-# ###################################################################################################
+    # List apps with options A, B, C...
+    print("Select an app to remove:")
+    for idx, (name, url) in enumerate(apps.items(), start=1):
+        print(f"{chr(64 + idx)}. {name}")
 
-def start_checking():
-    """Start checking the TestFlight slots for all apps."""
-    apps = load_apps()
-    if not apps:
-        print(f"[{datetime.now()}] No apps to check.")
+    app_choice = input("Enter the option (A, B, C, etc.): ").strip().upper()
+
+    # Validate input choice
+    if not app_choice.isalpha() or ord(app_choice) < 65 or ord(app_choice) > 65 + len(apps) - 1:
+        print(f"[{datetime.now()}] Invalid option. Returning to the menu.")
         return
 
-    # Check if the DISCORD_WEBHOOK_URL is set in the testflight_checker.py script
-    webhook_url = check_and_prompt_webhook()  # Ensure the webhook URL is set before proceeding
+    app_index = ord(app_choice) - 65
+    app_name = list(apps.keys())[app_index]
 
-    # Check if PM2 is installed and initialized
-    if not check_pm2():
-        print(f"[{datetime.now()}] PM2 is missing or not initialized. Please install PM2 manually to continue.")
+    # Remove the selected app
+    del apps[app_name]
+    save_apps(apps)
+    print(f"[{datetime.now()}] App '{app_name}' removed.")
+    
+    # Restart silently in the background to apply changes
+    restart_checker()
+
+# =======================
+# PM2 Availability Check
+# =======================
+def is_pm2_installed():
+    """Check if PM2 is installed and accessible."""
+    return shutil.which("pm2") is not None
+
+# =======================
+# Process Management (PM2)
+# =======================
+def start_checker():
+    """Start the slot checker using PM2 with -f and --update-env options."""
+    create_env_file()  # Ensure .env file is created if it doesn't exist
+
+    if not is_pm2_installed():
+        print(f"[{datetime.now()}] Error: PM2 is not installed or not accessible. Please install PM2 and try again.")
+        print("You can install PM2 by running the following commands:")
+        print("1. sudo apt update")
+        print("2. sudo apt install nodejs npm -y")
+        print("3. sudo npm install -g pm2")
         return
 
-    print(f"[{datetime.now()}] Starting TestFlight beta checker.")
+    if not MULTIPLE_INSTANCES:
+        # Stop any existing process for 'testflight_checker' to avoid duplicates if SINGLE INSTANCE is enabled
+        subprocess.run(["pm2", "delete", PM2_PROCESS_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # If single instance mode is allowed, check for an existing process and delete it
-    if not ALLOW_MULTIPLE_INSTANCES:
-        os.system("pm2 delete testflight_checker")  # Delete any existing instance of testflight_checker
+    # Start the new process
+    subprocess.run(["pm2", "start", "testflight_checker.py", "--name", PM2_PROCESS_NAME, "--update-env", "-f"])
 
-    # Start the TestFlight checker with PM2, force if already running
-    os.system("pm2 start testflight_checker.py --name testflight_checker -f")  # Added -f option
+    # Save the current process list to avoid warnings
+    subprocess.run(["pm2", "save"])
 
-    # Save PM2 state
-    os.system("pm2 save")
+    print(f"[{datetime.now()}] Slot checker started with updated environment variables and PM2 configuration saved.")
 
-    # Send a test message to the Discord webhook after starting the checker
-    send_test_message(webhook_url)
+    # Check if the webhook is empty and remind the user
+    if not check_webhook():
+        print(f"[{datetime.now()}] Warning: Webhook URL is empty. Notifications are not set. Please update the webhook URL.")
 
-    # Exit after starting the checker
-    print(f"[{datetime.now()}] TestFlight checker started in PM2.")
-    exit()
+    # Check if the configuration file exists
+    if not os.path.exists(CONFIG_FILE_PATH):  # Check if the configuration file exists
+        print(f"[{datetime.now()}] Configuration file not found. Creating a new blank file.")
+        save_apps({})  # Create an empty configuration file
 
-def stop_checking():
-    """Stop the TestFlight checker."""
-    os.system("pm2 stop testflight_checker")
-    print(f"[{datetime.now()}] TestFlight checker stopped.")
+def stop_checker():
+    """Stop the slot checker using PM2."""
+    if not is_pm2_installed():
+        print(f"[{datetime.now()}] Error: PM2 is not installed or not accessible. Please install PM2 and try again.")
+        return
 
-def restart_checking():
-    """Restart the TestFlight checker."""
-    os.system("pm2 restart testflight_checker --update-env")
-    print(f"[{datetime.now()}] TestFlight checker restarted.")
+    subprocess.run(["pm2", "stop", PM2_PROCESS_NAME])
+    print(f"[{datetime.now()}] Slot checker stopped.")
 
-def check_testflight_slot(app_name, testflight_url):
-    """Check if there are available TestFlight slots for a given app."""
-    try:
-        response = requests.get(testflight_url)
-        response.raise_for_status()
-        if "View in TestFlight" in response.text:
-            print(f"[{datetime.now()}] Slots available for {app_name}!")
-        else:
-            print(f"[{datetime.now()}] No available slots for {app_name}.")
-    except requests.exceptions.RequestException as e:
-        print(f"[{datetime.now()}] Error checking slot for {app_name}: {e}")
+def restart_checker():
+    """Restart the slot checker using PM2."""
+    create_env_file()  # Ensure .env file is created if it doesn't exist
 
-# ###################################################################################################
-# SECTION: Webhook Management
-# ###################################################################################################
+    if not is_pm2_installed():
+        print(f"[{datetime.now()}] Error: PM2 is not installed or not accessible. Please install PM2 and try again.")
+        return
 
-def send_test_message(webhook_url):
-    """Send a test message to the Discord webhook."""
-    test_message = {"content": "Webhook is successfully set up and the TestFlight Manager is running!"}
-    try:
-        response = requests.post(webhook_url, json=test_message)
-        if response.status_code == 204:
-            print(f"[{datetime.now()}] Test message sent successfully to Discord webhook.")
-        else:
-            print(f"[{datetime.now()}] Failed to send test message. Response: {response.text} (Status code: {response.status_code})")
-    except requests.exceptions.RequestException as e:
-        print(f"[{datetime.now()}] Error sending test message: {e}")
+    # Restart the existing process
+    subprocess.run(["pm2", "restart", PM2_PROCESS_NAME])
 
-def validate_discord_webhook(webhook_url):
-    """Validate the Discord webhook URL."""
-    try:
-        response = requests.post(webhook_url, json={"content": "Webhook test."})
-        return response.status_code == 204
-    except requests.exceptions.RequestException:
-        print(f"[{datetime.now()}] Error validating webhook URL.")
-        return False
+    # Save the current process list to avoid warnings
+    subprocess.run(["pm2", "save"])
 
-def inject_webhook_url_into_checker(webhook_url):
-    """Inject the webhook URL into the testflight_checker.py script."""
-    try:
-        with open(CHECKER_SCRIPT_PATH, 'r') as file:
-            script_content = file.readlines()
-        for i, line in enumerate(script_content):
-            if line.strip().startswith("DISCORD_WEBHOOK_URL ="):
-                script_content[i] = f'DISCORD_WEBHOOK_URL = "{webhook_url}"\n'
-                break
-        with open(CHECKER_SCRIPT_PATH, 'w') as file:
-            file.writelines(script_content)
-        print(f"[{datetime.now()}] Webhook URL injected into checker script.")
-    except Exception as e:
-        print(f"[{datetime.now()}] Error injecting webhook: {e}")
+    print(f"[{datetime.now()}] Slot checker restarted with updated environment variables.")
 
-# ###################################################################################################
-# SECTION: Main Menu
-# ###################################################################################################
+    # Check if the webhook is empty and remind the user
+    if not check_webhook():
+        print(f"[{datetime.now()}] Warning: Webhook URL is empty. Notifications are not set. Please update the webhook URL.")
 
-def main_menu():
-    """Main interactive menu."""
-    # Check PM2 before starting the menu loop
-    check_pm2()
-
+    # Check if the configuration file exists
+    if not os.path.exists(CONFIG_FILE_PATH):  # Check if the configuration file exists
+        print(f"[{datetime.now()}] Configuration file not found. Creating a new blank file.")
+        save_apps({})  # Create an empty configuration file
+    
+# =======================
+# Advanced Options (Updates and Webhook)
+# =======================
+def advanced_options():
     while True:
-        print(f"\nTestFlight Manager - Main Menu\n{'='*30}")
-        print("1. List apps\n2. Add app\n3. Remove app\n4. Start checker\n5. Stop checker\n6. Restart checker\n7. Set Webhook\n8. Exit")
-        choice = input("Choose an option (1-8): ")
+        print("\nAdvanced Options:")
+        print("===================")
+        print("1. Update the Webhook URL")
+        print("2. Check for updates from GitHub")
+        print("3. Back to main menu")
+        choice = input("Choose an option (1-3): ").strip()
 
-        if choice == "1": 
-            list_apps()
-        elif choice == "2": 
-            add_app()
-        elif choice == "3": 
-            remove_app()
-        elif choice == "4": 
-            start_checking()
-        elif choice == "5": 
-            stop_checking()
-        elif choice == "6": 
-            restart_checking()
-        elif choice == "7": 
-            inject_webhook_url_into_checker(check_and_prompt_webhook())
-        elif choice == "8": 
+        if choice == "1":
+            update_webhook()
+        elif choice == "2":
+            check_for_updates()
+        elif choice == "3":
             break
-        else: 
-            print(f"[{datetime.now()}] Invalid choice.")
+        else:
+            print("Invalid option. Please try again.")
 
-# ###################################################################################################
-# SECTION: Entry Point
-# ###################################################################################################
+def update_webhook():
+    """Update the webhook URL in the .env file."""
+    webhook_url = input("Enter the new webhook URL: ").strip()
 
+    # Do not update if the webhook URL is empty
+    if not webhook_url:
+        print(f"[{datetime.now()}] Webhook URL not updated. Returning to the menu.")
+        return
+    
+    # Validate the webhook URL format
+    if not validate_discord_webhook(webhook_url):
+        return
+
+    # Open the .env file and update the webhook URL
+    with open(".env", "r") as file:
+        lines = file.readlines()
+
+    with open(".env", "w") as file:
+        for line in lines:
+            if line.startswith("DISCORD_WEBHOOK_URL="):
+                file.write(f"DISCORD_WEBHOOK_URL='{webhook_url}'\n")
+            else:
+                file.write(line)
+
+    print(f"[{datetime.now()}] Webhook URL updated in the .env file.")
+
+    # Restart PM2 process to apply changes
+    restart_checker()
+    print(f"[{datetime.now()}] PM2 process restarted to apply updated webhook.")
+
+def check_for_updates():
+    """Check for updates from GitHub based on user's choice (beta or stable)."""
+    # Ask the user for the type of release they want to check (beta or stable)
+    release_type = input(f"[{datetime.now()}] Which version would you like to check for? (beta or stable): ").strip().lower()
+
+    if release_type not in ["beta", "stable"]:
+        print(f"[{datetime.now()}] Invalid option. Please choose either 'beta' or 'stable'.")
+        return
+
+    # Define the GitHub API URL for the releases
+    github_api_url = "https://api.github.com/repos/AT3K/TestFlight-Checker/releases"
+
+    try:
+        # Make the request to GitHub API to get the releases
+        response = requests.get(github_api_url)
+        response.raise_for_status()
+
+        # Get the current version of the app
+        current_version_str = CURRENT_VERSION.lstrip("v")  # Strip 'v' from the current version
+        current_version = version.parse(current_version_str)
+
+        # Get the list of releases from the response
+        releases = response.json()
+
+        # Separate beta and stable releases
+        beta_versions = []
+        stable_versions = []
+
+        for release in releases:
+            tag_name = release['tag_name']
+            if '-alpha' in tag_name or '-beta' in tag_name:
+                beta_versions.append(tag_name)
+            else:
+                stable_versions.append(tag_name)
+
+        # Find the latest version for each release type
+        latest_beta_version = max([version.parse(v.lstrip("v")) for v in beta_versions], default=None)
+        latest_stable_version = max([version.parse(v.lstrip("v")) for v in stable_versions], default=None)
+
+        if release_type == "beta":
+            if latest_beta_version:
+                print(f"[{datetime.now()}] Latest beta release: {latest_beta_version}")
+                if latest_beta_version > current_version:
+                    pull_update = input(f"Would you like to pull the latest beta version? (y/n): ").strip().lower()
+                    if pull_update == "y":
+                        pull_latest_update()
+                elif latest_beta_version < current_version:
+                    print(f"[{datetime.now()}] Seems like you have a build higher than the latest beta release. You must be a developer or a secret tester! 🧑‍💻")
+                else:
+                    print(f"[{datetime.now()}] You are already on the latest beta version!")
+            else:
+                print(f"[{datetime.now()}] No beta versions available.")
+        
+        elif release_type == "stable":
+            if latest_stable_version:
+                print(f"[{datetime.now()}] Latest stable release: {latest_stable_version}")
+                if latest_stable_version > current_version:
+                    pull_update = input(f"Would you like to pull the latest stable version? (y/n): ").strip().lower()
+                    if pull_update == "y":
+                        pull_latest_update()
+                elif latest_stable_version < current_version:
+                    print(f"[{datetime.now()}] Seems like you have a build higher than the latest stable release. You must be a developer or a secret tester! 🧑‍💻")
+                else:
+                    print(f"[{datetime.now()}] You are already on the latest stable version!")
+            else:
+                print(f"[{datetime.now()}] No stable versions available.")
+    
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] Error checking for updates: {e}")
+
+def pull_latest_update():
+    """Pull the latest changes from the GitHub repository."""
+    if not is_git_installed():
+        print(f"[{datetime.now()}] Error: Git is not installed. Please install Git and try again.")
+        return
+
+    if not is_git_repository():
+        print(f"[{datetime.now()}] Error: This is not a Git repository. Please initialize a Git repository first.")
+        return
+
+    print(f"[{datetime.now()}] Pulling the latest updates from the repository...")
+    try:
+        result = subprocess.run(["git", "pull"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode == 0:
+            print(f"[{datetime.now()}] Successfully pulled the latest update.")
+        else:
+            print(f"[{datetime.now()}] Error pulling updates: {result.stderr.decode()}")
+    except subprocess.CalledProcessError as e:
+        print(f"[{datetime.now()}] Failed to pull updates: {e}")
+
+# =======================
+# Git Installation & Repository Checks
+# =======================
+def is_git_installed():
+    """Check if Git is installed on the system."""
+    return shutil.which("git") is not None
+
+def is_git_repository():
+    """Check if the current directory is a Git repository."""
+    return os.path.isdir(".git")
+
+# =======================
+# Main Menu & Program Flow
+# =======================
+def main_menu():
+    while True:
+        print("\nMain Menu:")
+        print("=================")
+        print("1. List all configured apps")
+        print("2. Add a new app")
+        print("3. Remove an app")
+        print("4. Start the checker")
+        print("5. Stop the checker")
+        print("6. Restart the checker")
+        print("7. Advanced options")
+        print("8. Exit")
+
+        choice = input("Choose an option (1-8): ").strip()
+
+        if choice == "1":
+            list_apps()
+        elif choice == "2":
+            add_app()
+        elif choice == "3":
+            remove_app()
+        elif choice == "4":
+            start_checker()
+        elif choice == "5":
+            stop_checker()
+        elif choice == "6":
+            restart_checker()
+        elif choice == "7":
+            advanced_options()
+        elif choice == "8":
+            print("Exiting...")
+            break
+        else:
+            print("Invalid option. Please try again.")
+
+# =======================
+# Program Execution
+# =======================
 if __name__ == "__main__":
     main_menu()

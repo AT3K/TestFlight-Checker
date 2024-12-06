@@ -10,3 +10,6 @@ TestFlightChecker/
 
 # Ignore configuration backup
 *.bck
+
+# Ignore App configuration file
+apps_config.json
