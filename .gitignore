@@ -6,10 +6,13 @@
 __pycache__/
 
 # Ignore virtual environment folder
-TestFlightChecker/
+TestFlight-Checker/
 
 # Ignore configuration backup
 *.bck
 
 # Ignore App configuration file
 apps_config.json
+
+# Ignore log files
+*.log
