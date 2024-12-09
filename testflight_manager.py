@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Configuration & Constants
 # =======================
 MULTIPLE_INSTANCES = False  # Set to True to allow multiple instances, False to allow only a single instance
-CURRENT_VERSION = "v0.1.1-beta"  # Current version of the application
+CURRENT_VERSION = "v0.1.2-beta"  # Current version of the application
 CONFIG_FILE_PATH = "apps_config.json"  # Path to the apps configuration file
 PM2_PROCESS_NAME = "testflight_checker"  # Name of the PM2 process
 WEBHOOK_URL_PATTERN = r"^https://discord\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$"  # Regex pattern to validate Discord webhook URL
